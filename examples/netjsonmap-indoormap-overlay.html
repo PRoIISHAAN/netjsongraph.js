@@ -1,0 +1,464 @@
+<!doctype html><html lang="en"><head><title>Network Map Visualization</title><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><link rel="stylesheet" href="https://unpkg.com/leaflet@1.8.0/dist/leaflet.css" integrity="sha512-hoalWLoI8r4UszCkZ5kL8vayOGVae1oxXe/2A4AO6J9+580uKHDO3JdHb7NzwwzK5xr/Fs0W40kiNHxM9vyTtQ==" crossorigin=""/><link href="../lib/css/netjsongraph-theme.css" rel="stylesheet"/><link href="../lib/css/netjsongraph.css" rel="stylesheet"/><style>body {
+        margin: 0;
+        padding: 0;
+      }
+      #map-container {
+        position: relative;
+        width: 100%;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #map-content {
+        width: 100%;
+        height: 100%;
+      }
+      #indoormap-container {
+        position: absolute; /* overlay */
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 80%;
+        height: 90%;
+        padding: 20px;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        border-radius: 7px;
+        background-color: white;
+      }
+      #indoormap-close {
+        position: absolute;
+        top: 2px;
+        right: 5px;
+        color: gray;
+        border: none;
+        padding: 2px 5px;
+        cursor: pointer;
+        border-radius: 4px;
+        font-size: 18px;
+        z-index: 9999;
+      }
+      #netjson-indoormap {
+        width: 100%;
+        height: 100%;
+        flex: 1;
+      }
+      #netjson-indoormap .njg-sideBar {
+        background: #f4f4f4;
+        border-right: 1px solid rgba(0, 0, 0, 0.2);
+      }
+      #indoormap-container .njg-container .sideBarHandle {
+        top: 35px;
+        left: 390px;
+      }
+      #indoormap-container .njg-container .hidden .sideBarHandle {
+        left: 35px;
+      }
+      .njg-container .njg-sideBar {
+        display: none;
+      }
+      .njg-container .leaflet-popup-tip-container {
+        bottom: -3.5%;
+      }
+      .njg-container .leaflet-popup-tip {
+        box-shadow: none;
+      }
+      .njg-container .default-popup .njg-popup-button-container {
+        text-align: center;
+      }
+      .njg-container .default-popup .njg-popup-button {
+        padding: 6px 12px;
+        border: none;
+        border-radius: 5px;
+        background-color: black;
+        color: white;
+        cursor: pointer;
+        margin-top: 5px;
+      }
+      .njg-container .default-popup .njg-popup-button:hover {
+        background-color: rgb(85, 85, 85);
+      }</style><script src="../netjsongraph.min.js"></script></head><body><div id="map-container"><div id="map-content"></div></div><script>// This example uses popups instead of the default sidebar.
+      const disableDefaultSidebar = () => {};
+      // Shared between the outer geo map and the indoor map; the only thing
+      // that differs between the two popups is `content` (custom button for
+      // the geo map, default for the indoor map).
+      const SHARED_POPUP_CONFIG = {
+        closeOnClick: false,
+        autoPan: true,
+        autoPanPadding: [25, 25],
+        offset: [-8, -8],
+      };
+      const netjsonmap = new NetJSONGraph("../assets/data/netjsonmap.json", {
+        el: "#map-content",
+        render: "map",
+        mapOptions: {
+          worldCopyJump: true,
+          center: [46.86764405052012, 19.675998687744144],
+          zoom: 5,
+          nodeConfig: {
+            label: {
+              show: false,
+              offset: [0, -10],
+            },
+          },
+          baseOptions: {media: [{option: {tooltip: {show: true}}}]},
+          nodePopup: {
+            show: true,
+            content: createCustomPopup,
+            config: SHARED_POPUP_CONFIG,
+          },
+        },
+        bookmarkableActions: {
+          enabled: true,
+          id: "geoMap",
+          zoomLevel: 10,
+        },
+        prepareData: (data) => {
+          data.nodes.forEach((n) => {
+            n.label = n.name;
+            n.properties = n.properties || {};
+            n.properties.location = n.location;
+          });
+          data.links.forEach((l) => {
+            l.properties = l.properties || {};
+            l.category = l.properties.status || "up";
+          });
+          return data;
+        },
+        onClickElement: disableDefaultSidebar,
+      });
+      netjsonmap.setUtils({
+        // Added to open popup for a specific location Id in selenium tests
+        triggerOnClick: function (id) {
+          const index = netjsonmap?.data?.nodes?.findIndex((n) => n.id === id);
+          const nodeData = netjsonmap?.data?.nodes?.[index];
+          if (index === -1 || !nodeData) {
+            netjsonmap.utils.removeUrlFragment(
+              netjsonmap.config.bookmarkableActions.id,
+            );
+            console.error(`Node with ID "${id}" not found.`);
+            return;
+          }
+          const option = netjsonmap.echarts.getOption();
+          const series = option.series.find(
+            (s) => s.type === "scatter" || s.type === "effectScatter",
+          );
+          const seriesIndex = option.series.indexOf(series);
+          const params = {
+            componentType: "series",
+            componentSubType: series.type,
+            dataIndex: index,
+            data: {
+              ...series.data[index],
+              node: nodeData,
+            },
+            seriesIndex: seriesIndex,
+            seriesType: series.type,
+          };
+          netjsonmap.echarts.trigger("click", params);
+        },
+      });
+      netjsonmap.render();
+      // needed for selenium tests
+      window._geoMap = netjsonmap;
+
+      function getIndoorMapFragment() {
+        let decodedHash = "";
+        try {
+          decodedHash = decodeURIComponent(
+            window.location.hash.replace(/^#/, ""),
+          );
+        } catch (err) {
+          return null;
+        }
+        const fragments = decodedHash.split(";").filter(Boolean);
+
+        return fragments.find((fragment) => {
+          const params = new URLSearchParams(fragment);
+          return params.get("id") === "indoorMap";
+        });
+      }
+      if (getIndoorMapFragment()) {
+        openIndoorMap();
+      }
+
+      // Keep the overlay in sync with the URL fragments.
+      // NetJSONGraph dispatches `fragmentchange` after calling history.pushState/
+      // history.replaceState, and also on browser back/forward navigation.
+      window.addEventListener("fragmentchange", () => {
+        const hasIndoorFragment = Boolean(getIndoorMapFragment());
+        const isOverlayOpen =
+          document.getElementById("indoormap-container") !== null;
+
+        // No indoor fragment → close overlay if open, then bail.
+        if (!hasIndoorFragment) {
+          if (isOverlayOpen) {
+            cleanupIndoorMap(
+              document.getElementById("indoormap-container"),
+              window._indoorMap,
+            );
+          }
+          return;
+        }
+
+        // Indoor fragment present but overlay not open → open it.
+        if (!isOverlayOpen) {
+          openIndoorMap();
+          return;
+        }
+      });
+
+      // Called with `this` = the netjsongraph instance (see README docs for
+      // mapOptions.nodePopup.content). We reuse the library's default popup
+      // builder and just append the "Open Floorplan" action.
+      function createCustomPopup(node) {
+        const popupContent = this.gui.createDefaultPopupContent(node);
+        const buttonContainer = document.createElement("div");
+        buttonContainer.classList.add("njg-popup-button-container");
+        const button = document.createElement("button");
+        button.classList.add("njg-popup-button");
+        button.textContent = "Open Floorplan";
+        button.addEventListener("click", () => openIndoorMap());
+        buttonContainer.appendChild(button);
+        popupContent.appendChild(buttonContainer);
+        return popupContent;
+      }
+
+      function createIndoorMapContainer() {
+        const container = document.createElement("div");
+        container.id = "indoormap-container";
+        const closeBtn = document.createElement("span");
+        closeBtn.id = "indoormap-close";
+        closeBtn.innerHTML = "&times;";
+        const netjsonDiv = document.createElement("div");
+        netjsonDiv.id = "netjson-indoormap";
+        container.appendChild(closeBtn);
+        container.appendChild(netjsonDiv);
+        return container;
+      }
+
+      function cleanupIndoorMap(container, indoorMap) {
+        if (indoorMap && indoorMap._popstateHandler) {
+          window.removeEventListener("popstate", indoorMap._popstateHandler);
+          indoorMap._popstateHandler = null;
+        }
+        if (indoorMap?.echarts?.dispose) {
+          indoorMap.echarts.dispose();
+        }
+        if (indoorMap?.leaflet?.remove) {
+          indoorMap.leaflet.remove();
+        }
+        if (container) {
+          container.remove();
+        }
+        if (!indoorMap || window._indoorMap === indoorMap) {
+          window._indoorMap = null;
+        }
+      }
+
+      function closeButtonHandler(container, indoorMap, onClose) {
+        const closeBtn = container.querySelector("#indoormap-close");
+        closeBtn.addEventListener("click", () => {
+          cleanupIndoorMap(container, indoorMap);
+          indoorMap.utils.removeUrlFragment("indoorMap", null, false, false);
+          if (typeof onClose === "function") {
+            onClose();
+          }
+        });
+      }
+
+      function openIndoorMap() {
+        if (window._indoorMap) {
+          return window._indoorMap;
+        }
+
+        let indoorMapContainer = document.getElementById("indoormap-container");
+        if (!indoorMapContainer) {
+          indoorMapContainer = createIndoorMapContainer();
+        }
+        const mapContainer = document.getElementById("map-container");
+        mapContainer.appendChild(indoorMapContainer);
+
+        const indoor = new NetJSONGraph(
+          "../assets/data/netjsonmap-indoormap.json",
+          {
+            el: "#netjson-indoormap",
+            render: "map",
+            mapOptions: {
+              worldCopyJump: false,
+              center: [0, 0],
+              zoom: 0,
+              minZoom: 6,
+              maxZoom: 10,
+              zoomSnap: 0.5,
+              zoomDelta: 0.5,
+              nodeConfig: {
+                label: {
+                  show: false,
+                },
+                animation: false,
+              },
+              baseOptions: {media: [{option: {tooltip: {show: true}}}]},
+              nodePopup: {
+                show: true,
+                content: null,
+                config: SHARED_POPUP_CONFIG,
+              },
+            },
+            bookmarkableActions: {
+              enabled: true,
+              id: "indoorMap",
+              zoomOnRestore: false,
+              preserveFragment: true,
+            },
+            prepareData: (data) => {
+              data.nodes.forEach((n) => {
+                n.label = n.name;
+                n.properties = n.properties || {};
+                n.properties.location = n.location;
+              });
+              return data;
+            },
+            onReady: async function () {
+              const map = this.leaflet;
+              // Remove default tile layers
+              map.eachLayer((layer) => layer._url && map.removeLayer(layer));
+
+              const img = new Image();
+              const imageUrl = "../assets/images/floorplan.png";
+              img.src = imageUrl;
+              await img.decode();
+              if (
+                window._indoorMap !== this ||
+                !document.getElementById("indoormap-container")
+              ) {
+                return;
+              }
+              const aspectRatio = img.width / img.height;
+              const h = 700;
+              const w = h * aspectRatio;
+              const zoom = map.getMaxZoom() - 1;
+              const anchorLatLng = L.latLng(0, 0);
+              const anchorPoint = map.project(anchorLatLng, zoom);
+              const topLeft = L.point(
+                anchorPoint.x - w / 2,
+                anchorPoint.y - h / 2,
+              );
+              const bottomRight = L.point(
+                anchorPoint.x + w / 2,
+                anchorPoint.y + h / 2,
+              );
+              const mapOptions = this.echarts.getOption();
+              // Refer netjsonmap-indoormap.html for full explanation of this workaround
+              // Build an id -> node map so we don't assume the echarts series
+              // data and this.data.nodes share array indices (clustering or
+              // filtering can break that assumption).
+              const nodesById = new Map(this.data.nodes.map((n) => [n.id, n]));
+              mapOptions.series[0].data.forEach((data) => {
+                const node = data.node;
+                const px = Number(node.location.lng);
+                const py = -Number(node.location.lat);
+                const nodeProjected = L.point(topLeft.x + px, topLeft.y + py);
+                const nodeLatLng = map.unproject(nodeProjected, zoom);
+                const dataNode = nodesById.get(node.id);
+                if (dataNode) {
+                  dataNode.location = nodeLatLng;
+                  dataNode.properties = dataNode.properties || {};
+                  dataNode.properties.location = nodeLatLng;
+                }
+                node.location = nodeLatLng;
+                node.properties = node.properties || {};
+                node.properties.location = nodeLatLng;
+                data.value = [nodeLatLng.lng, nodeLatLng.lat];
+              });
+              mapOptions.series[1].data.forEach((data) => {
+                const source = data.coords[0];
+                const sourcePx = Number(source[0]);
+                const sourcePy = -Number(source[1]);
+                const sourceNodeProjected = L.point(
+                  topLeft.x + sourcePx,
+                  topLeft.y + sourcePy,
+                );
+                const sourceNodeLatLng = map.unproject(
+                  sourceNodeProjected,
+                  zoom,
+                );
+                const target = data.coords[1];
+                const targetPx = Number(target[0]);
+                const targetPy = -Number(target[1]);
+                const targetNodeProjected = L.point(
+                  topLeft.x + targetPx,
+                  topLeft.y + targetPy,
+                );
+                const targetNodeLatLng = map.unproject(
+                  targetNodeProjected,
+                  zoom,
+                );
+                data.coords[0] = [sourceNodeLatLng.lng, sourceNodeLatLng.lat];
+                data.coords[1] = [targetNodeLatLng.lng, targetNodeLatLng.lat];
+              });
+              this.echarts.setOption(mapOptions);
+              const nw = map.unproject(topLeft, zoom);
+              const se = map.unproject(bottomRight, zoom);
+              const bnds = L.latLngBounds(nw, se);
+
+              L.imageOverlay(imageUrl, bnds).addTo(map);
+              map.fitBounds(bnds);
+              map.setMaxBounds(bnds);
+              map.invalidateSize();
+
+              // Add the indoor fragment only after the map is initialized.
+              // Use pushState so the overlay-open state becomes its own
+              // back/forward history entry.
+              const fragments = this.utils.parseUrlFragments();
+              if (fragments && !fragments.indoorMap) {
+                const indoorParams = new URLSearchParams();
+                indoorParams.set("id", "indoorMap");
+                fragments.indoorMap = indoorParams;
+                this.utils.updateUrlFragments(
+                  fragments,
+                  {id: "indoorMap"},
+                  false,
+                );
+              }
+            },
+            onClickElement: disableDefaultSidebar,
+          },
+        );
+        indoor.setUtils({
+          // Added a utility function to open a specific popup for a node Id in selenium tests
+          triggerOnClick: function (id) {
+            const index = indoor?.data?.nodes?.findIndex((n) => n.id === id);
+            const nodeData = indoor?.data?.nodes?.[index];
+            if (index === -1 || !nodeData) {
+              indoor.utils.removeUrlFragment(
+                indoor.config.bookmarkableActions.id,
+              );
+              console.error(`Node with ID "${id}" not found.`);
+              return;
+            }
+            const option = indoor.echarts.getOption();
+            const series = option.series.find((s) => s.type === "scatter");
+            const seriesIndex = option.series.indexOf(series);
+
+            const params = {
+              componentType: "series",
+              componentSubType: series.type,
+              dataIndex: index,
+              data: {
+                ...series.data[index],
+                node: nodeData,
+              },
+              seriesIndex: seriesIndex,
+              seriesType: series.type,
+            };
+            indoor.echarts.trigger("click", params);
+          },
+        });
+        indoor.render();
+        window._indoorMap = indoor;
+        closeButtonHandler(indoorMapContainer, indoor);
+      }</script></body></html>
